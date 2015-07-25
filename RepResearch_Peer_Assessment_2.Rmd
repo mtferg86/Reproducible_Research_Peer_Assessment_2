@@ -1,0 +1,247 @@
+---
+title: 'Reproducible Research Peer Assessment 2: US Storm Damage Effects on Health and Economic Damages'
+author: "Matthew Fergusson"
+date: "July 24, 2015"
+output: html_document
+keep_md: true
+---
+
+
+##Synopsis
+
+This analysis aims to answer 2 key questions about the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database:
+
+1) Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+2) Across the United States, which types of events have the greatest economic consequences?
+
+The analysis will look at the total number of fatalities and injuries and damages due to these events in the US from 1985 onward. To determine what is most harmful the report looks at events with the top 10 most fatalities and injuries combined during that time period. To determine the greatest economic impact the report looks at events with the top 10 highest combined property and crop damages during that time period.
+
+##Background
+
+This report looks at the data available in the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database records information about major storms and other weather events in the United States. The records record when and where these events take place and estimates of injuries, property damage, and fatalities.
+
+##Data Processing
+
+First the libraries that would be used were set and then the raw data file was downloaded from the Coursera website and read in as a CSV. The code for these steps are shown below:
+
+```{R}
+##Data Processing
+###########################################
+# Set Libraries 
+###########################################
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(sqldf)
+library(lubridate)
+
+###########################################
+# Download data 
+###########################################
+
+#file URL
+fileUrl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+#Destination file path and file name
+fileDest <- "C:/Users/mfergusson/Desktop/MTF Personal/Education - Coursera Data Science Specialization/05 - Reproducible Research/Peer Assessment 2/repdata-data-StormData.csv.bz2"
+
+#directory for R scripts and other work
+Base_wd = "C:/Users/mfergusson/Desktop/MTF Personal/Education - Coursera Data Science Specialization/05 - Reproducible Research/Peer Assessment 2"
+setwd(Base_wd)
+
+#download file
+  #download.file(fileUrl, destfile = fileDest)
+#unzip all to location
+
+StormData <- read.csv("repdata-data-StormData.csv.bz2", header=TRUE, sep = "," , quote = "\"")
+```
+
+After looking at the data in the viewer window the "BGN_DATE"", "EVTYPE", "FATALITIES", "INJURIES", "PROPDMG", "PROPDMGEXP" , "CROPDMG", and "CROPDMGEXP" fields were the only fields carried forward in the analysis because they seemed most appropriate for answering the questions posed about health and economic damages.
+
+```{R}
+names(StormData)
+#Keep: 
+# "BGN_DATE"" / "EVTYPE" / "FATALITIES" / "INJURIES" / "PROPDMG" / "PROPDMGEXP" /  "CROPDMG" / "CROPDMGEXP"
+
+StormData_2 <- select(StormData, BGN_DATE,  EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP )
+  StormData_2$FATALITIES <- as.numeric(StormData_2$FATALITIES) 
+  StormData_2$INJURIES <- as.numeric(StormData_2$INJURIES)
+  StormData_2$PROPDMG <- as.numeric(StormData_2$PROPDMG)
+  StormData_2$CROPDMG <- as.numeric(StormData_2$CROPDMG)
+  StormData_2$BGN_DATE <- as.POSIXct(StormData_2$BGN_DATE, format = "%m/%d/%Y %H:%M:%S")
+  StormData_2$year <- year(StormData_2$BGN_DATE)
+```
+
+After this the data needed to be examined to look for any outliers. The distribution of events was looked at first. It appeared that the records for events doesn't approach modern levels until around 1990. Despite this I have decided to look at all events from 1985 onward to capture the events that have occurred in my lifetime. 
+
+Limiting the data like this will underestimate the impact of less frequent events such as earthquakes; however, it is a balance between looking at less events recorded in the past which would have more heavily weighted those major events and looking at evenly weighted data that might exclude those based on their probability of occurrence. I have chosen to stick with the time periods with more comprehensive data coverage.
+
+```{R}
+#look at data distribution by year
+  par(mfcol = c(1,2))
+  par(mar = c(4.5,4.5,3,2))
+  hist(StormData_2$year
+       , main=""
+       , xlab="year"
+       , ylab="Yearly Event Count")
+  par(mar = c(3,3,3,2))
+  boxplot(StormData_2$year)
+  mtext("Yearly Event Observations", side = 3, line = -2, outer = TRUE, cex = 2)
+
+#Filder out loans before 1985
+    #looks like modern reading start to come into play around 1990 but I would like to
+    #look at all the data points within my lifetime to make things interesting for me
+  StormData_2 <- filter(StormData_2, StormData_2$year >= 1985)
+```
+
+Other aspects of the data that needed to be examined were the "PROPDMGEXP" and "CROPDMGEXP" fields. the values in these fields appear to indicate that they should be used as an exponential value to calculate the actual damages values (ex. PROPDMG = $213.00 and PROPDMGEXP = 3: therefore the actual property damage is 213*10^3 = $213,000.00). In these fields there were number values and letter values. Because this data was collected and populated over time from different sources I assume there were different data conventions and I have interpreted the letter values as follows
+
+* "B" or "b" - Billions (10^9) therefore PROPDMGEXP/CROPDMGEXP = 9
+* "M" or "m" - Millions (10^6) therefore PROPDMGEXP/CROPDMGEXP = 6
+* "K" or "k" - Thousands (10^3) therefore PROPDMGEXP/CROPDMGEXP = 3
+* "H" or "h" - Hundreds (10^2) therefore PROPDMGEXP/CROPDMGEXP = 2
+* "?", "+", "-", or "" - Undefined values that will be given a default of PROPDMGEXP/CROPDMGEXP = 0
+
+The code for these modifications to the "PROPDMGEXP" and "CROPDMGEXP"  fields and creation of modified damages fields are shown below:
+
+```{R}
+#examing the "EXP" fields
+  unique(StormData_2$PROPDMGEXP)
+  unique(StormData_2$CROPDMGEXP)
+
+#create modified "PROPDMGEXP" and "CROPDMGEXP" fields to treat them as exponential values of the damages
+  StormData_3 <- sqldf(" SELECT *
+        ,  case when PROPDMGEXP in ('B','b') then 9
+                when PROPDMGEXP in ('M','m') then 6
+                when PROPDMGEXP in ('K','k') then 3
+                when PROPDMGEXP in ('H','h') then 2
+                when PROPDMGEXP in ('?','-','', '+') then 0
+                else PROPDMGEXP
+           end as PROPDMGEXP_mod
+        ,  case when CROPDMGEXP in ('B','b') then 9
+                when CROPDMGEXP in ('M','m') then 6
+                when CROPDMGEXP in ('K','k') then 3
+                when CROPDMGEXP in ('H','h') then 2
+                when CROPDMGEXP in ('?','-','', '+') then 0
+                else CROPDMGEXP
+           end as CROPDMGEXP_mod
+        FROM StormData_2")
+
+#create modified damages fields to make values comparable for top 10
+  StormData_3$PROPDMG_mod <- StormData_3$PROPDMG * 10^StormData_3$PROPDMGEXP_mod
+  StormData_3$CROPDMG_mod <- StormData_3$CROPDMG * 10^StormData_3$CROPDMGEXP_mod
+```
+
+Following these modifications to the data set, the data was prepped to create results that would show the top 10 events that cause the most health related damage (fatalities and injuries) and the top 10 events that cause the most economic damages.
+
+```{R}
+#Take sum of all injuries, fatalities and economic damages by event type
+  #using modified fields for damages
+StormData_4 <- sqldf("SELECT EVTYPE 
+      ,sum(FATALITIES) as FATALITIES_TOT 
+      ,sum(INJURIES) as INJURIES_TOT 
+      ,sum(FATALITIES) + sum(INJURIES) as FAT_INJ_TOT
+      ,sum(PROPDMG_mod) as PROPDMG_TOT 
+      ,sum(CROPDMG_mod) as CROPDMG_TOT 
+      ,sum(PROPDMG_mod) + sum(CROPDMG_mod) as ECONDMG_TOT
+      ,count(*) as OCCURENCES
+      FROM StormData_3
+      GROUP BY EVTYPE")
+
+#Isolate Health related data
+      StormData_Health <- select(StormData_4, EVTYPE, FATALITIES_TOT, INJURIES_TOT, FAT_INJ_TOT)
+    #Top 10 Inuries and Fatalities Combined 
+      StormData_Health <- arrange(StormData_Health, desc(FAT_INJ_TOT))
+      StormData_Health_Top10_Both <- StormData_Health[1:10,]
+    #Top 10 fatalities
+      StormData_Health <- arrange(StormData_Health, desc(FATALITIES_TOT))
+      StormData_Health_Top10_Fat <- StormData_Health[1:10,]
+    #Top 10 Injuries
+        StormData_Health <- arrange(StormData_Health, desc(INJURIES_TOT))
+        StormData_Health_Top10_Inj <- StormData_Health[1:10,]
+    
+    #Combine for table display
+     Health_Impact_comp <- cbind(as.character(StormData_Health_Top10_Both$EVTYPE), as.numeric(StormData_Health_Top10_Both$FAT_INJ_TOT)
+            , as.character(StormData_Health_Top10_Fat$EVTYPE), as.numeric(StormData_Health_Top10_Fat$FATALITIES_TOT)
+            , as.character(StormData_Health_Top10_Inj$EVTYPE), as.numeric(StormData_Health_Top10_Inj$INJURIES_TOT))
+     colnames(Health_Impact_comp) <- c("Top 10 Combined","Fatalities and Injuries","Top 10 Fatalities","Fatalities", "Top 10 Injuries","Injuries"  )    
+
+#Isolate Econ damage related data
+    StormData_EconDMG <- select(StormData_4, EVTYPE, PROPDMG_TOT, CROPDMG_TOT, ECONDMG_TOT)
+    #Top 10 Inuries and Fatalities Combined 
+    StormData_EconDMG <- arrange(StormData_EconDMG, desc(ECONDMG_TOT))
+    StormData_EconDMG_Top10_Both <- StormData_EconDMG[1:10,]
+    #Top 10 fatalities
+    StormData_EconDMG <- arrange(StormData_EconDMG, desc(PROPDMG_TOT))
+    StormData_EconDMG_Top10_PROP <- StormData_EconDMG[1:10,]
+    #Top 10 Injuries
+    StormData_EconDMG <- arrange(StormData_EconDMG, desc(CROPDMG_TOT))
+    StormData_EconDMG_Top10_CROP <- StormData_EconDMG[1:10,]
+    
+    #Combine for table display
+    EconDMG_Impact_comp <- cbind(as.character(StormData_EconDMG_Top10_Both$EVTYPE), as.numeric(StormData_EconDMG_Top10_Both$ECONDMG_TOT)
+                                , as.character(StormData_EconDMG_Top10_PROP$EVTYPE), as.numeric(StormData_EconDMG_Top10_PROP$PROPDMG_TOT)
+                                , as.character(StormData_EconDMG_Top10_CROP$EVTYPE), as.numeric(StormData_EconDMG_Top10_CROP$CROPDMG_TOT))
+    colnames(EconDMG_Impact_comp) <- c("Top 10 Combined","Property and Crop Damage","Top 10 Property Damage","Property Damage", "Top 10 Crop Damage","Crop Damage")    
+```
+  
+##Results
+
+The results for top health hazard events are shown below:
+
+Comparison of combined ranking, fatality ranking, and injury ranking: 
+```{R}
+Health_Impact_comp <- data.frame(Health_Impact_comp)
+
+#display top 10 counts by impacts
+ select (Health_Impact_comp, Top.10.Combined, Fatalities.and.Injuries)
+ select (Health_Impact_comp, Top.10.Fatalities, Fatalities)
+ select (Health_Impact_comp, Top.10.Injuries, Injuries)
+
+```
+
+Graph displaying top 10 events for fatalities and inruries combined    
+```{R}
+par(mfcol = c(1,1))
+par(mar =c( 8, 4, 2, 2))
+barplot(StormData_Health_Top10_Both$FAT_INJ_TOT
+        , las=2
+        , names = StormData_Health_Top10_Both$EVTYPE
+        , cex.names = 0.7
+        , cex.axis = 0.7
+        , xlab = ""
+        , ylab = "Event Occurences"
+        , main = "Top 10: Combined Fatality and Injury Occurences")
+
+
+```
+
+The results for most economically damaging events are shown below:
+
+Comparison of combined ranking, fatality ranking, and injury ranking: 
+```{R}
+EconDMG_Impact_comp <- data.frame(EconDMG_Impact_comp)
+
+#display top 10 counts by impacts
+select(EconDMG_Impact_comp, Top.10.Combined,Property.and.Crop.Damage)
+select(EconDMG_Impact_comp, Top.10.Property.Damage,Property.Damage)
+select(EconDMG_Impact_comp, Top.10.Crop.Damage,Crop.Damage)
+```
+
+Graph displaying top 10 events for fatalities and inruries combined    
+```{R}
+#Change damage values to billions ($)
+StormData_EconDMG_Top10_Both_Graph <- StormData_EconDMG_Top10_Both
+StormData_EconDMG_Top10_Both_Graph$ECONDMG_TOT <- StormData_EconDMG_Top10_Both_Graph$ECONDMG_TOT / 10^9
+
+par(mfcol = c(1,1))
+par(mar =c( 8, 5, 2, 2))
+barplot(StormData_EconDMG_Top10_Both_Graph$ECONDMG_TOT
+        , las=2
+        , names = StormData_EconDMG_Top10_Both_Graph$EVTYPE
+        , cex.names = 0.7
+        , cex.axis = 0.7
+        , xlab = ""
+        , ylab = "Damages (in Billions of USD)"
+        , main = "Top 10: Combined Property and Crop Damages")
+```
+
